@@ -1,6 +1,6 @@
 from fabric.api import *
 import os
-import subprocess
+import blitz.configfile as cf
 
 
 current_dir = os.path.abspath(os.path.dirname(__file__))
@@ -32,7 +32,6 @@ class Helpers():
         )
         for directory in directories:
             sudo('mkdir -p %s' % directory)
-        sudo('cd %s && git init '% self.repo_path)
         local('echo ******FINISH*****')
 
     # Config files format so far:
@@ -40,40 +39,52 @@ class Helpers():
     #   github_repo_url: https://github.com/testperson/testapp.git
     #   EOL
     def read_in_config_and_set(self):
-        f = open('%s/.blitzConfig' % current_dir)
-        lines = f.readlines()
-        if lines[0].startswith('app_name:'):
-            app_name_line = lines[0]
-            self.app_name = app_name_line[app_name_line.index('app_name:')+len('app_name:'):].strip()
+        if cf.get_appname() is not None:
+            self.app_name = cf.get_appname()
             self.deploy_path = '/var/www/%s' % self.app_name
             self.working_path = '%s/current' % self.deploy_path
             self.repo_path = '%s/repo' % self.deploy_path
             self.releases_path = '%s/releases' % self.deploy_path
             self.shared_path = '%s/shared' % self.deploy_path
-            if lines[1].startswith('github_repo_url:'):
-                github_url_line = lines[1]
-                self.github_repo_url = \
-                    github_url_line[github_url_line.index('github_repo_url:')+len('github_repo_url:'):].strip()
+            if cf.get_github_repo_url() is not None:
+                self.github_repo_url = cf.get_github_repo_url()
             else:
                 print("NEED TO ADD GIT_HUB_REPO_URL")
         else:
             print("NEED TO ADD APP_NAME")
 
     def pull_to_repo(self):
-        #local('git push origin master')
-        sudo('rm -rf %s/*' % self.repo_path)
-        sudo('cd %s && git clone %s' % (self.repo_path, self.github_repo_url))
-        sudo('rm -rf %s/* && cp -rf %s/* %s' % (self.working_path, self.repo_path, self.working_path))
-        sudo('cd %s &&'
-             ' COMMITHASH=$(git rev-parse HEAD) && '
+        #assumes there is a new commit ready on github
+        if self.is_repo_empty():
+            sudo('cd %s && git init && git clone %s' % (self.repo_path, self.github_repo_url))
+        else:
+            sudo('cd %s && git pull %s' % (self.repo_path, self.github_repo_url))
+        if self.need_to_prune_releases():
+            sudo("cd %s && rm -rf `ls -t | awk 'NR>4'`" % self.releases_path)
+        sudo('cd %s && '
+             'COMMITHASH=$(git rev-parse HEAD) && '
              'cd %s && mkdir -p ${COMMITHASH} && '
-             'cp -rf %s/* ${COMMITHASH} ' % (self.repo_path, self.releases_path, self.repo_path) )
-        sudo('rm -rf %s/.git' % self.working_path)
+             'cp -rf %s/* ${COMMITHASH} && '
+             'rm -rf %s/* && '
+             'ln -s %s/${COMMITHASH} %s'
+             % (self.repo_path, self.releases_path, self.repo_path,
+                self.working_path, self.releases_path, self.working_path))
 
     def push_local_commit(self):
         pass
 
+    def is_repo_empty(self):
+        answer = run('[ "$(ls -A %s)" ] && echo "Not Empty" || echo "Empty"' % self.repo_path)
+        if "Not" not in answer:
+            return True
+        else:
+            return False
 
-
-
-
+    def need_to_prune_releases(self):
+        answer = run('cd %s && ls -l | grep -v ^l | wc -l' % self.releases_path)
+        num_dirs = int(answer)  # This will be +1 off actual num_dirs when at least one dir exists
+        print(num_dirs)
+        if num_dirs > 5:
+            return True
+        else:
+            return False
